@@ -17,18 +17,17 @@ export default class Moqt extends EventEmitter {
         this._addListeners()
     }
 
+    destroy() {
+        this._worker.terminate()
+    }
+
     connect( { endpoint }: {endpoint:String} ) {
         return new Promise<any>( ( resolve, reject ) => {
             const timer = setTimeout(() => {
                 reject( new Error('connect timeout'))
             }, this._timeout )
 
-            this._ev.addListener('error:connect', (data:string) => {
-                clearTimeout( timer )
-                reject( new Error( data ) )
-            })
-
-            this._ev.addListener('response:connect', data => {
+            this._ev.once('response:connect', data => {
                 clearTimeout( timer )
                 resolve( data )
             })
@@ -58,12 +57,32 @@ export default class Moqt extends EventEmitter {
         })
     }
 
+    createPublisher( moqTracks:object ) {
+        return new Promise<object>( ( resolve, reject ) => {
+            const timer = setTimeout(() => {
+                reject( new Error('createPublisher timeout'))
+            }, this._timeout)
+
+            this._ev.once('response:createPublisher', ( data:object) => {
+                clearTimeout( timer )
+                resolve( data )
+            })
+
+            this._worker.postMessage({
+                type: 'createPublisher',
+                payload: { tracks: moqTracks }
+            })
+        })
+    }
+
+
     _addListeners = () => {
-        this._worker.addEventListener('message', ({ data }) => {
+        this._worker.addEventListener('message', ({ data }:{data:any}) => {
+            console.log( data )
             switch( data.type ) {
             case 'response':
-                if( data.meta?.kind === 'connect' ) {
-                    this._ev.emit('response:connect', data.payload )
+                if( data.meta?.kind ) {
+                    this._ev.emit(`response:${data.meta.kind}`, data.payload )
                 }
                 break
             case 'closed':
@@ -71,8 +90,8 @@ export default class Moqt extends EventEmitter {
                 this.emit('closed')
                 break
             case 'error':
-                if( data.meta?.kind === 'connect' ) {
-                    this._ev.emit('error:connect', data.payload )
+                if( data.meta?.kind ) {
+                    this.emit('error', `${data.meta.kind}::${data.payload}` )
                 }
                 break
             default:

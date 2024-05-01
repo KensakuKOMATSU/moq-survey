@@ -1,5 +1,18 @@
+import { StateEnum } from "./utils"
+
+import { 
+    Role, 
+    sendSetupRequest,
+    recvSetupResponse,
+    sendAnnounceRequest,
+    recvAnnounceResponse,
+    sendSubscribe,
+    recvSubscribe,
+    sendSubscribeResponse,
+    recvSubscribeResponse
+} from "../../utils/messages"
+
 declare var WebTransport: any
-// import { createMessage } from './util'
 
 type Data = {
     type:String,
@@ -7,15 +20,26 @@ type Data = {
     payload?:any
 }
 
-type Context = {
+type MoqtContext = {
     endpoint: string,
-    wt: any
+    wt: any,
+    controlStream: any,
+    controlWriter: any,
+    controlReader: any,
+    tracks: object
 }
 
-const context:Context = {
+const _moqt:MoqtContext = {
     endpoint: '',
-    wt: null
+    wt: null,
+    controlStream: null,
+    controlWriter: null,
+    controlReader: null,
+    tracks: {}
 }
+
+let workerState:StateEnum = StateEnum.Created
+let inFlightRequests = {}
 
 const postResponseMessage = ( kind:String, payload: any) => {
     postMessage({
@@ -59,24 +83,79 @@ self.addEventListener( 'message', async ({ data }:{data:Data}) => {
                 break
             }
 
-            context.endpoint = endpoint
+            _moqt.endpoint = endpoint
 
-            const url = new URL( context.endpoint )
+            const url = new URL( _moqt.endpoint )
             url.protocol = 'https'
 
-            context.wt = new WebTransport(url.href)
+            _moqt.wt = new WebTransport(url.href)
 
-            context.wt.closed
+            _moqt.wt.closed
                 .then( postCloseMessage )
                 .catch( (err:Error) => postErrorMessage('close', err.message))
-            await context.wt.ready
+
+            await _moqt.wt.ready
+            _moqt.controlStream = await _moqt.wt.createBidirectionalStream()
+            _moqt.controlWriter = _moqt.controlStream.writable
+            _moqt.controlReader = _moqt.controlStream.readable
+
             postResponseMessage( data.type, endpoint )
 
             break
+        case 'createPublisher':
+            const { tracks } = data.payload
+
+            console.log( tracks )
+
+            if( !(tracks && typeof tracks === 'object' && typeof tracks.data === 'object' )) {
+                postErrorMessage( data.type, 'tracks MUST be specified as Object')
+                break
+            }
+
+            _moqt.tracks = { ..._moqt.tracks, ...tracks }
+
+            // SETUP
+            await sendSetupRequest( _moqt.controlWriter, Role.ROLE_CLIENT_SEND )
+            const resp = await recvSetupResponse( _moqt.controlReader )
+
+            // ANNOUNCE
+            console.log('createPublisher: tracks:%o', _moqt.tracks )
+
+            const announcedNamespaces:Array<string> = []
+            for( const trackData of Object.values( _moqt.tracks )) {
+                if( !announcedNamespaces.includes( trackData.namespace )) {
+                    await sendAnnounceRequest( _moqt.controlWriter, trackData.namespace, trackData.authInfo )
+                    const announceResp = await recvAnnounceResponse( _moqt.controlReader )
+                    if( trackData.namespace !== announceResp.namespace ) {
+                        throw new Error(`Expecting namespace ${trackData.namespace}, but got ${JSON.stringify(announceResp)}`)
+                    }
+                    announcedNamespaces.push(trackData.namespace)
+                }
+            }
+
+            /**
+             * todo:
+             * for( const track of tracks ) {
+             *  await sendAnnounceRequest( _moqt.controlWriter, ...)
+             *  await recvAnnounceResponse( _moqt.controlReader )
+             * }
+             */
+
+            postResponseMessage( data.type, resp)
+
+            break
         case 'disconnect':
-            if( context.wt ) {
-                await context.wt.close()
-                context.wt = null
+            try {
+                if( _moqt.controlWriter ) {
+                    await _moqt.controlWriter.close()
+                }
+                if( _moqt.wt ) {
+                    await _moqt.wt.close()
+                }
+            } catch( err:any ) {
+                postErrorMessage('disconnect', err?.message )
+            } finally {
+                _moqt.wt = null
                 postCloseMessage()
             }
             break
@@ -84,5 +163,20 @@ self.addEventListener( 'message', async ({ data }:{data:Data}) => {
             // noop
     }
 })
+
+async function _startSubscriptionLoop( readerStream:ReadableStream, writerStream:WritableStream ) {
+    while ( workerState === StateEnum.Running ) {
+        const subscribe = await recvSubscribe(readerStream)
+    }
+}
+
+function _initInflightReqData() {
+    const ret:any = {}
+    for( const type of Object.keys(_moqt.tracks) ) {
+        ret[type] = {}
+    }
+    return ret
+}
+
 
 export {}

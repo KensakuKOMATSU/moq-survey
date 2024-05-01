@@ -1,7 +1,5 @@
 import { numberToVarInt, varIntToNumber } from './varint'
 import { concatBuffer, buffRead } from './buffer_utils'
-import { read } from 'fs'
-import { Writable } from 'stream'
 
 // MOQT definitions
 // https://datatracker.ietf.org/doc/draft-ietf-moq-transport/01/
@@ -135,14 +133,14 @@ export async function recvAnnounceResponse( readerStream:ReadableStream ) {
 // SUBSCRIBE
 //
 ////////////////////////////////////////////
-export async function sendSubscribe( writeStream:WritableStream, namespace:string, trackName:string, authInfo:string ) {
+export async function sendSubscribe( writerStream:WritableStream, namespace:string, trackName:string, authInfo:string ) {
     const mesg = _createSubscribeMessage( namespace, trackName, authInfo )
-    return await _send( writeStream, mesg )
+    return await _send( writerStream, mesg )
 }
 
-export async function sendSubscribeResponse( writeStream:WritableStream, namespace:string, trackName:string, trackId:number, expiresMs:number ) {
+export async function sendSubscribeResponse( writerStream:WritableStream, namespace:string, trackName:string, trackId:number, expiresMs:number ) {
     const mesg = _createSubscribeResponseMessage( namespace, trackName, trackId, expiresMs )
-    return await _send( writeStream, mesg )
+    return await _send( writerStream, mesg )
 }
 
 export async function recvSubscribe( readerStream:ReadableStream ) {

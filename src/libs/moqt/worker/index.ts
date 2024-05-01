@@ -6,10 +6,8 @@ import {
     recvSetupResponse,
     sendAnnounceRequest,
     recvAnnounceResponse,
-    sendSubscribe,
     recvSubscribe,
     sendSubscribeResponse,
-    recvSubscribeResponse
 } from "../../utils/messages"
 
 declare var WebTransport: any
@@ -26,7 +24,9 @@ type MoqtContext = {
     controlStream: any,
     controlWriter: any,
     controlReader: any,
-    tracks: object
+    tracks: object,
+    inFlightRequests: object,
+    workerState: StateEnum
 }
 
 const _moqt:MoqtContext = {
@@ -35,11 +35,10 @@ const _moqt:MoqtContext = {
     controlStream: null,
     controlWriter: null,
     controlReader: null,
-    tracks: {}
+    tracks: {},
+    inFlightRequests: {},
+    workerState: StateEnum.Created
 }
-
-let workerState:StateEnum = StateEnum.Created
-let inFlightRequests = {}
 
 const postResponseMessage = ( kind:String, payload: any) => {
     postMessage({
@@ -71,11 +70,20 @@ const postErrorMessage = ( kind:String, message: any) => {
 
 /* eslint-disable-next-line no-restricted-globals */
 self.addEventListener( 'message', async ({ data }:{data:Data}) => {
+    if( _moqt.workerState === StateEnum.Created ) {
+        _moqt.workerState = StateEnum.Instantiated
+    }
+
+    if( _moqt.workerState === StateEnum.Stopped ) {
+        console.log(`Moqt is stopped. This does not accept any messages`)
+    }
+
     switch( data.type ) {
-        case 'ping': 
+        case 'ping': {
             postMessage('pong: `' + data.payload + '`')
             break
-        case 'connect': 
+        }
+        case 'connect': {
             const { endpoint } = data.payload
 
             if( !endpoint ) {
@@ -102,49 +110,61 @@ self.addEventListener( 'message', async ({ data }:{data:Data}) => {
             postResponseMessage( data.type, endpoint )
 
             break
-        case 'createPublisher':
-            const { tracks } = data.payload
+        }
+        case 'createPublisher': {
+            try {
+                const { tracks } = data.payload
 
-            console.log( tracks )
-
-            if( !(tracks && typeof tracks === 'object' && typeof tracks.data === 'object' )) {
-                postErrorMessage( data.type, 'tracks MUST be specified as Object')
-                break
-            }
-
-            _moqt.tracks = { ..._moqt.tracks, ...tracks }
-
-            // SETUP
-            await sendSetupRequest( _moqt.controlWriter, Role.ROLE_CLIENT_SEND )
-            const resp = await recvSetupResponse( _moqt.controlReader )
-
-            // ANNOUNCE
-            console.log('createPublisher: tracks:%o', _moqt.tracks )
-
-            const announcedNamespaces:Array<string> = []
-            for( const trackData of Object.values( _moqt.tracks )) {
-                if( !announcedNamespaces.includes( trackData.namespace )) {
-                    await sendAnnounceRequest( _moqt.controlWriter, trackData.namespace, trackData.authInfo )
-                    const announceResp = await recvAnnounceResponse( _moqt.controlReader )
-                    if( trackData.namespace !== announceResp.namespace ) {
-                        throw new Error(`Expecting namespace ${trackData.namespace}, but got ${JSON.stringify(announceResp)}`)
-                    }
-                    announcedNamespaces.push(trackData.namespace)
+                if( !(tracks && typeof tracks === 'object' && typeof tracks.data === 'object' )) {
+                    postErrorMessage( data.type, 'tracks MUST be specified as Object')
+                    break
                 }
+
+                _moqt.tracks = { ..._moqt.tracks, ...tracks }
+
+                // SETUP
+                await sendSetupRequest( _moqt.controlWriter, Role.ROLE_CLIENT_SEND )
+                const resp = await recvSetupResponse( _moqt.controlReader )
+
+                // ANNOUNCE
+                console.log('createPublisher: tracks:%o', _moqt.tracks )
+
+                const announcedNamespaces:Array<string> = []
+                for( const trackData of Object.values( _moqt.tracks )) {
+                    if( !announcedNamespaces.includes( trackData.namespace )) {
+                        await sendAnnounceRequest( _moqt.controlWriter, trackData.namespace, trackData.authInfo )
+                        const announceResp = await recvAnnounceResponse( _moqt.controlReader )
+                        if( trackData.namespace !== announceResp.namespace ) {
+                            throw new Error(`Expecting namespace ${trackData.namespace}, but got ${JSON.stringify(announceResp)}`)
+                        }
+                        announcedNamespaces.push(trackData.namespace)
+                    }
+                }
+
+                _moqt.inFlightRequests = _initInFlightReqData()
+
+                _moqt.workerState = StateEnum.Running
+
+                _startSubscriptionLoop( _moqt.controlReader, _moqt.controlWriter )
+                    .then( _ => {
+                        console.log('Exited receiving subscription message in control stream')
+                    })
+                    .catch( (err:Error) => {
+                        if( _moqt.workerState !== StateEnum.Stopped ) {
+                            console.error(`Error in receiving subscription message in control stream. Error: ${JSON.stringify( err )}`)
+                        } else {
+                            console.log(`Exited receiving subscription message in control stream. Err: ${JSON.stringify(err)}`)
+                        }
+                    })
+
+
+                postResponseMessage( data.type, resp)
+            } catch( err ) {
+                console.error(`Error detected while createProducer. Err: ${JSON.stringify(err)}`)
             }
-
-            /**
-             * todo:
-             * for( const track of tracks ) {
-             *  await sendAnnounceRequest( _moqt.controlWriter, ...)
-             *  await recvAnnounceResponse( _moqt.controlReader )
-             * }
-             */
-
-            postResponseMessage( data.type, resp)
-
             break
-        case 'disconnect':
+        }
+        case 'disconnect': {
             try {
                 if( _moqt.controlWriter ) {
                     await _moqt.controlWriter.close()
@@ -159,24 +179,62 @@ self.addEventListener( 'message', async ({ data }:{data:Data}) => {
                 postCloseMessage()
             }
             break
+        }
         default: 
             // noop
     }
 })
 
+
+//////////////////////////////////////////////////////////
+// private
+//
+//////////////////////////////////////////////////////////
+
 async function _startSubscriptionLoop( readerStream:ReadableStream, writerStream:WritableStream ) {
-    while ( workerState === StateEnum.Running ) {
-        const subscribe = await recvSubscribe(readerStream)
+    while ( _moqt.workerState === StateEnum.Running ) {
+        // TODO: set correct type
+        const subscribe:any = await recvSubscribe( readerStream )
+
+        const track = _getTrack( subscribe.namespace, subscribe.trackName )
+        if( track === null ) {
+            console.warn(`Unknown subscribe received ${subscribe.namespace}/${subscribe.trackName}`)
+        } else {
+            if( track.authInfo !== subscribe.parameters?.authInfo ) {
+                console.warn(`Invalid authInfo ${subscribe.parameters?.authInfo} received for ${subscribe.namespace}/${subscribe.trackName}`)
+            } else {
+                if( 'numSubscribers' in track ) {
+                    track.numSubscribers++
+                } else {
+                    track.numSubscribers = 1
+                }
+                console.log(`New subscriber for track ${subscribe.namespace}/${subscribe.trackName}. Current num of subscribers: ${track.numSubscribers}`)
+                await sendSubscribeResponse( writerStream, subscribe.namespace, subscribe.trackName, track.id, 0 )
+            }
+        }
     }
 }
 
-function _initInflightReqData() {
+// Helper
+
+function _initInFlightReqData() {
     const ret:any = {}
     for( const type of Object.keys(_moqt.tracks) ) {
         ret[type] = {}
     }
     return ret
 }
+
+function _getTrack( namespace:string, trackName:string ) {
+    for( const data of Object.values( _moqt.tracks )) {
+        if( data.namespace === namespace && data.name === trackName ) {
+            return data
+        }
+    }
+    // when pair of namespace and trackName is not found
+    return null
+}
+
 
 
 export {}

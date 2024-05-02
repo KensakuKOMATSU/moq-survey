@@ -205,6 +205,10 @@ export async function recvSubscribeResponse( readerStream:ReadableStream ) {
     return ret
 }
 
+export async function sendObject( writer:WritableStream, trackId:number, groupSeq:number, objSeq:number, sendOrder:number, data:any ) {
+    return _send( writer, _createObjectBytes( trackId, groupSeq, objSeq, sendOrder, data ))
+}
+
 ////////////////////////////////////////////
 // private
 //
@@ -257,6 +261,18 @@ function _createSubscribeResponseMessage( namespace:string, trackName:string, tr
         _createStringBytes(trackName),
         numberToVarInt(trackId),
         numberToVarInt(expiresMs)
+    ])
+}
+
+function _createObjectBytes( trackId:number, groupSeq:number, objSeq:number, sendOrder:number, data:any ) {
+    return concatBuffer([
+        numberToVarInt( OBJECT_WITH_LENGTH ),
+        numberToVarInt( trackId ),
+        numberToVarInt( groupSeq ),
+        numberToVarInt( objSeq ),
+        numberToVarInt( sendOrder ),
+        numberToVarInt( data.byteLength ),
+        data
     ])
 }
 

@@ -8,24 +8,62 @@ import {
     recvAnnounceResponse,
     recvSubscribe,
     sendSubscribeResponse,
+    sendObject
 } from "../../utils/messages"
+
+import { RawPackager } from "../../packager/raw_packager"
+import { LocPackager } from "../../packager/loc_packager"
+
+import { MoqtTracks } from "../../../types/moqt"
 
 declare var WebTransport: any
 
-type Data = {
-    type:String,
-    meta?:any
-    payload?:any
+
+interface InFlightRequests {
+    [key:string]: object
 }
 
+interface PublisherState {
+    [key:number]: PublisherStateObject
+}
+
+type PublisherStateObject = {
+    currentGroupSeq: number,
+    currentObjectSeq: number
+}
+
+
+type MessageData = {
+    type:string,
+    meta?:any
+    payload?:any,
+    firstFrameClkms?: number,
+    compensatedTs?: number,
+    estimatedDuration?: number,
+    seqId?: number,
+    metadata?: any,
+    chunk?: any
+}
+
+type ChunkData = {
+    mediaType: string,
+    firstFrameClkms: number,
+    compensatedTs: number,
+    estimatedDuration: number,
+    packagerType: string,
+    seqId: number,
+    chunk: any,
+    metadata: any
+}
 type MoqtContext = {
     endpoint: string,
     wt: any,
     controlStream: any,
     controlWriter: any,
     controlReader: any,
-    tracks: object,
-    inFlightRequests: object,
+    tracks: MoqtTracks,
+    inFlightRequests: InFlightRequests,
+    publisherState: PublisherState,
     workerState: StateEnum
 }
 
@@ -37,6 +75,7 @@ const _moqt:MoqtContext = {
     controlReader: null,
     tracks: {},
     inFlightRequests: {},
+    publisherState: {},
     workerState: StateEnum.Created
 }
 
@@ -69,7 +108,7 @@ const postErrorMessage = ( kind:String, message: any) => {
 
 
 /* eslint-disable-next-line no-restricted-globals */
-self.addEventListener( 'message', async ({ data }:{data:Data}) => {
+self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
     if( _moqt.workerState === StateEnum.Created ) {
         _moqt.workerState = StateEnum.Instantiated
     }
@@ -158,7 +197,7 @@ self.addEventListener( 'message', async ({ data }:{data:Data}) => {
                     })
 
 
-                postResponseMessage( data.type, resp)
+                postResponseMessage( data.type, resp )
             } catch( err ) {
                 console.error(`Error detected while createProducer. Err: ${JSON.stringify(err)}`)
             }
@@ -181,7 +220,27 @@ self.addEventListener( 'message', async ({ data }:{data:Data}) => {
             break
         }
         default: 
-            // noop
+            if( _moqt.workerState !== StateEnum.Running ) {
+                console.warn("MOQT is not open yet.")
+                break
+            }
+            if( !(data.type in _moqt.tracks) ) {
+                postErrorMessage("warn", `unknown type "${data.type}" received. ignored.` )
+                break
+            }
+
+            if( !( data.type && 'numSubscribers' in _moqt.tracks[data.type])) {
+                postErrorMessage("info", "no subscriber found")
+                // break
+            }
+            const firstFrameClkms = ( data.firstFrameClkms === undefined || data.firstFrameClkms < 0 ) ? 0 : data.firstFrameClkms
+            const compensatedTs = ( data.compensatedTs === undefined || data.compensatedTs < 0 ) ? 0 : data.compensatedTs
+            const estimatedDuration = ( data.estimatedDuration === undefined || data.estimatedDuration < 0 ) ? 0 : data.estimatedDuration
+            const seqId = (data.seqId === undefined ) ? 0 : data.seqId
+            const packagerType = _moqt.tracks[data.type].packagerType || 'raw'
+
+            const chunkData:ChunkData = { mediaType: data.type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, packagerType, chunk: data.chunk, metadata: data.metadata }
+            _sendChunk( chunkData, _moqt.inFlightRequests[data.type], _moqt.tracks[data.type].maxInFlightRequests  )
     }
 })
 
@@ -203,7 +262,7 @@ async function _startSubscriptionLoop( readerStream:ReadableStream, writerStream
             if( track.authInfo !== subscribe.parameters?.authInfo ) {
                 console.warn(`Invalid authInfo ${subscribe.parameters?.authInfo} received for ${subscribe.namespace}/${subscribe.trackName}`)
             } else {
-                if( 'numSubscribers' in track ) {
+                if( 'numSubscribers' in track && track.numSubscribers !== undefined ) {
                     track.numSubscribers++
                 } else {
                     track.numSubscribers = 1
@@ -213,6 +272,95 @@ async function _startSubscriptionLoop( readerStream:ReadableStream, writerStream
             }
         }
     }
+}
+
+async function _sendChunk( chunkData:ChunkData, inFlightRequest:object, maxInFlightRequests: number ) {
+    if( chunkData === null ) {
+        return { dropped: true, message: 'chunkData is null'}
+    }
+    if( Object.keys(inFlightRequest).length >= maxInFlightRequests ) {
+        return { droppped: true, message: 'too many inflight requests' }
+    }
+    return _createRequest(chunkData)
+}
+
+async function _createRequest( chunkData:ChunkData ) {
+    let packet = null
+
+    if( chunkData.packagerType === 'loc' ) {
+        packet = new LocPackager()
+        const chunkDataBuffer = new Uint8Array( chunkData.chunk.byteLength )
+        chunkData.chunk.copyTo( chunkDataBuffer )
+
+        packet.SetData( 
+            chunkData.mediaType, 
+            chunkData.compensatedTs, 
+            chunkData.estimatedDuration, 
+            chunkData.chunk.type, 
+            chunkData.seqId, 
+            chunkData.firstFrameClkms,
+            chunkData.metadata,
+            chunkDataBuffer
+        )
+    } else if( chunkData.packagerType === 'raw') {
+        packet = new RawPackager()
+        packet.SetData( 
+            chunkData.mediaType, 
+            'key', 
+            chunkData.seqId, 
+            chunkData.chunk 
+        )
+    } else {
+        return { dropped: true, message: `unknown packagerType: "${chunkData.packagerType}".` }
+    }
+    return _createSendPromise(packet)
+}
+
+async function _createSendPromise( packet:RawPackager|LocPackager) {
+    if( _moqt.wt === null ) {
+        throw new Error('transport is not open')
+    }
+    if(!( packet.GetData().mediaType in _moqt.tracks )) {
+        throw new Error('mediaType is not found in tracck')
+    }
+    const trackId = _moqt.tracks[packet.GetData().mediaType].id
+
+    if( !( trackId in _moqt.publisherState ) ) {
+        if( packet.GetData().chunkType === 'delta' ) {
+            return { dropped: true, message: "Dropped chunk because first object cannot be delta"}
+        }
+        _moqt.publisherState[trackId] = _createTrackState()
+    }
+
+    const sendOrder = _calculateSendOrder( packet )
+
+    const uniStream = await _moqt.wt.createUnidirectionalStream({ options: { sendOrder } })
+    const uniWriter = uniStream.getWriter()
+
+    if( packet.GetData().chunkType !== 'delta' ) {
+        _moqt.publisherState[trackId].currentGroupSeq++
+        _moqt.publisherState[trackId].currentObjectSeq = 0
+    }
+    const groupSeq = _moqt.publisherState[trackId].currentGroupSeq
+    const objSeq = _moqt.publisherState[trackId].currentObjectSeq
+
+    // not wait until sendObject resolved.
+    console.log( packet.data )
+    console.log( packet.ToBytes())
+    sendObject( uniWriter, trackId, groupSeq, objSeq, sendOrder, packet.ToBytes() )
+
+    _moqt.publisherState[trackId].currentObjectSeq++
+
+    const p = uniWriter.close()
+    p.id = packet.GetData().pId
+
+    _addToInflight( packet.GetData().mediaType, p )
+
+    p.finally(() => {
+        _removeFromInflight( packet.GetData().mediaType, packet.GetData().pId )
+    })
+
+    return p
 }
 
 // Helper
@@ -233,6 +381,46 @@ function _getTrack( namespace:string, trackName:string ) {
     }
     // when pair of namespace and trackName is not found
     return null
+}
+
+function _createTrackState () {
+    return {
+        currentGroupSeq: 0,
+        currentObjectSeq: 0
+    }
+}
+
+function _calculateSendOrder (packet:RawPackager|LocPackager) {
+    // Prioritize:
+    // Audio over video
+    // New over old
+
+    let ret = packet.GetData().seqId
+    if (ret < 0) {
+        // Send now
+        ret = Number.MAX_SAFE_INTEGER
+    } else {
+        if (_moqt.tracks[packet.GetData().mediaType].isHipri) {
+            ret = Math.floor(ret + Number.MAX_SAFE_INTEGER / 2)
+        }
+    }
+    return ret
+}
+
+function _addToInflight(mediaType:string, p:any) {
+    if (p.id in _moqt.inFlightRequests[mediaType]) {
+        postErrorMessage("error", "id already exists in inflight which should never happen")
+    } else {
+        // @ts-ignore
+        _moqt.inFlightRequests[mediaType][p.id] = p
+    }
+}
+
+function _removeFromInflight(mediaType:string, id:string) {
+    if (id in _moqt.inFlightRequests[mediaType]) {
+        // @ts-ignore
+        delete _moqt.inFlightRequests[mediaType][id]
+    }
 }
 
 

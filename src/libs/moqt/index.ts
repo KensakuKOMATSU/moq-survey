@@ -1,6 +1,7 @@
 import EventEmitter from "events"
+import { MoqtData } from "../../types/moqt"
 
-//import SampleWorker from 'workerize-loader!./worker/sample' // eslint-disable-line import/no-webpack-loader-syntax
+
 export default class Moqt extends EventEmitter {
     _worker: Worker
     _ev: EventEmitter
@@ -75,6 +76,9 @@ export default class Moqt extends EventEmitter {
         })
     }
 
+    send( data:MoqtData){
+        this._worker.postMessage( data )
+    }
 
     _addListeners = () => {
         this._worker.addEventListener('message', ({ data }:{data:any}) => {

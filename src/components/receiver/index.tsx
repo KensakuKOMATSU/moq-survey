@@ -62,7 +62,7 @@ export default function Receiver(props:Props) {
             if( mesg.type === 'data' ) {
                 const ts = new Date().toLocaleString()
                 setRecvDatas( datas => (
-                    [ `${ts} - ${mesg.payload}`, ...datas ]
+                    [ `${ts} - ${mesg.payload}`, ...datas.slice( 0, 4 ) ]
                 ))
             } 
         })

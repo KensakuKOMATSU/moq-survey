@@ -1,1 +1,18 @@
 /* App.css */
+
+.App {
+    padding: 3px;
+}
+
+.App main {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+
+}
+
+.App main .component {
+    border: 1px solid gray;
+    width: 48vw;
+    padding: 4px;
+}

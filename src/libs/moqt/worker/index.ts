@@ -1,14 +1,18 @@
 import { StateEnum } from "./utils"
 
 import { 
-    Role, 
     sendSetupRequest,
     recvSetupResponse,
     sendAnnounceRequest,
     recvAnnounceResponse,
-    recvSubscribe,
+    sendSubscribeRequest,
+    recvSubscribeResponse,
+    recvSubscribeRequest,
     sendSubscribeResponse,
-    sendObject
+    recvObjectHeader,
+    sendObject,
+    ROLE_PARAMETER_PUBLISHER,
+    ROLE_PARAMETER_SUBSCRIBER
 } from "../../utils/messages"
 
 import { RawPackager } from "../../packager/raw_packager"
@@ -66,6 +70,10 @@ type MoqtContext = {
     publisherState: PublisherState,
     workerState: StateEnum
 }
+
+
+
+const EXPIRATION_TIMEOUT_DEF_MS = 10000
 
 const _moqt:MoqtContext = {
     endpoint: '',
@@ -162,7 +170,7 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
                 _moqt.tracks = { ..._moqt.tracks, ...tracks }
 
                 // SETUP
-                await sendSetupRequest( _moqt.controlWriter, Role.ROLE_CLIENT_SEND )
+                await sendSetupRequest( _moqt.controlWriter, ROLE_PARAMETER_PUBLISHER )
                 const resp = await recvSetupResponse( _moqt.controlReader )
 
                 // ANNOUNCE
@@ -184,22 +192,64 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
 
                 _moqt.workerState = StateEnum.Running
 
+                // TODO - move to close state when error occured
                 _startSubscriptionLoop( _moqt.controlReader, _moqt.controlWriter )
                     .then( _ => {
                         console.log('Exited receiving subscription message in control stream')
                     })
                     .catch( (err:Error) => {
                         if( _moqt.workerState !== StateEnum.Stopped ) {
-                            console.error(`Error in receiving subscription message in control stream. Error: ${JSON.stringify( err )}`)
+                            postErrorMessage("error", `Error in receiving subscription message in control stream. Error: ${JSON.stringify( err )}`)
                         } else {
-                            console.log(`Exited receiving subscription message in control stream. Err: ${JSON.stringify(err)}`)
+                            postErrorMessage("error", `Exited receiving subscription message in control stream. Err: ${JSON.stringify(err)}`)
                         }
                     })
 
 
                 postResponseMessage( data.type, resp )
             } catch( err ) {
-                console.error(`Error detected while createProducer. Err: ${JSON.stringify(err)}`)
+                postErrorMessage("error", `Error detected while createProducer. Err: ${JSON.stringify(err)}`)
+            }
+            break
+        }
+        case 'createSubscriber': {
+            try {
+                const { tracks } = data.payload
+
+                if( !(tracks && typeof tracks === 'object' && typeof tracks.data === 'object' )) {
+                    postErrorMessage( data.type, 'tracks MUST be specified as Object')
+                    break
+                }
+
+                _moqt.tracks = { ..._moqt.tracks, ...tracks }
+
+                // SETUP
+                await sendSetupRequest( _moqt.controlWriter, ROLE_PARAMETER_SUBSCRIBER )
+                const resp = await recvSetupResponse( _moqt.controlReader )
+
+                // SUBSCRIBE _moqt.tracks
+                console.log('createSubscriber: tracks:%o', _moqt.tracks )
+
+                for( const trackData of Object.values( _moqt.tracks )) {
+                    // TODO - implement
+                    await sendSubscribeRequest( _moqt.controlWriter, trackData.namespace, trackData.name, trackData.authInfo )
+
+                    // TODO - implement
+                    const subscribeResp = await recvSubscribeResponse( _moqt.controlReader )
+                    if( trackData.namespace !== subscribeResp.namespace || trackData.name !== subscribeResp.trackName ) {
+                        postErrorMessage("error", `SUBSCRIBE error - expecting ${trackData.namespace}/${trackData.name}, but got ${subscribeResp.namespace}/${subscribeResp.trackName}`)
+                        return
+                    }
+                    trackData.id = subscribeResp.trackId
+                }
+                _moqt.workerState = StateEnum.Running
+
+                // TODO - implement
+                _startReceiveObjects( EXPIRATION_TIMEOUT_DEF_MS )
+
+                postResponseMessage( data.type, resp )
+            } catch( err ) {
+                postErrorMessage("error", `Error detected while createSubscriber. Err: ${JSON.stringify(err)}`)
             }
             break
         }
@@ -253,7 +303,7 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
 async function _startSubscriptionLoop( readerStream:ReadableStream, writerStream:WritableStream ) {
     while ( _moqt.workerState === StateEnum.Running ) {
         // TODO: set correct type
-        const subscribe:any = await recvSubscribe( readerStream )
+        const subscribe:any = await recvSubscribeRequest( readerStream )
 
         const track = _getTrack( subscribe.namespace, subscribe.trackName )
         if( track === null ) {
@@ -270,6 +320,32 @@ async function _startSubscriptionLoop( readerStream:ReadableStream, writerStream
                 console.log(`New subscriber for track ${subscribe.namespace}/${subscribe.trackName}. Current num of subscribers: ${track.numSubscribers}`)
                 await sendSubscribeResponse( writerStream, subscribe.namespace, subscribe.trackName, track.id, 0 )
             }
+        }
+    }
+}
+
+async function _startReceiveObjects( expire:number ) {
+    if( _moqt.workerState === StateEnum.Stopped ) {
+        postErrorMessage("error", "start receiving objects failed: state is STOPPED.")
+        return
+    }
+
+    if( _moqt.wt === null ) {
+        postErrorMessage("error", "start receiving objects failed: WT does not initialized.")
+    }
+
+    const incomingStreams = _moqt.wt.incomingUnidirectionalStreams
+    const readableStreams = incomingStreams.getReader()
+
+    while ( _moqt.workerState !== StateEnum.Stopped ) {
+        const stream = await readableStreams.read()
+
+        try {
+            if( !stream.done ) {
+                await _recvProcessObjects( stream.value )
+            }
+        } catch( err ) {
+            postErrorMessage("error", `dropped stream. Error: ${JSON.stringify(err)}`)
         }
     }
 }
@@ -345,8 +421,6 @@ async function _createSendPromise( packet:RawPackager|LocPackager) {
     const objSeq = _moqt.publisherState[trackId].currentObjectSeq
 
     // not wait until sendObject resolved.
-    console.log( packet.data )
-    console.log( packet.ToBytes())
     sendObject( uniWriter, trackId, groupSeq, objSeq, sendOrder, packet.ToBytes() )
 
     _moqt.publisherState[trackId].currentObjectSeq++
@@ -361,6 +435,77 @@ async function _createSendPromise( packet:RawPackager|LocPackager) {
     })
 
     return p
+}
+
+async function _recvProcessObjects( readerStream:ReadableStream ) {
+    const startTime = Date.now()
+
+    const objHeader = await recvObjectHeader( readerStream )
+    const trackType = _getTrackTypeFromTrackId( objHeader.trackId )
+
+    if( trackType === undefined ) {
+        throw new Error(`Unexpected trackId received ${objHeader.trackId}.`)
+    }
+
+    if( trackType !== 'data' ) {
+        const packet = new LocPackager()
+        await packet.ReadBytes( readerStream )
+
+        const chunkData = packet.GetData()
+
+        if( chunkData.chunkType === undefined ||  chunkData.mediaType === undefined ) {
+            throw new Error(`Corrupted headers, we can NOT parse the data, headers: ${packet.GetDataStr()}`)
+        }
+
+        let chunk
+        if( chunkData.mediaType === 'audio' ) {
+            // @ts-ignore
+            chunk = new EncodedAudioChunk({
+                timestamp: chunkData.timestamp,
+                type: chunkData.chunkType,
+                data: chunkData.data,
+                duration: chunkData.duration
+            })
+        } else if( chunkData.mediaType === 'video' && ( chunkData.chunkType === 'key' || chunkData.chunkType === 'delta' ) ) {
+            // @ts-ignore
+            chunk = new EncodedVideoChunk({
+                timestamp: chunkData.timestamp,
+                type: chunkData.chunkType,
+                data: chunkData.data,
+                duration: chunkData.duration
+            })
+        }
+        postMessage({
+            type: chunkData.mediaType + "chunk",
+            metadata: {
+                clkms: Date.now(),
+                captureClkms: chunkData.firstFrameClkms,
+                seqId: chunkData.seqId,
+                metadata: chunkData.metadata
+            },
+            payload: chunk
+        })
+
+        const latencyMs = Date.now() - startTime
+        postMessage({
+            type: "latencyMs",
+            payload: latencyMs,
+            metadata: {
+                durationMs: chunkData.duration / 1_000, 
+                mediaType: chunkData.mediaType,
+                seqId: chunkData.seqId,
+                ts: chunkData.timestamp
+            }
+        })
+    } else {
+        const packet = new RawPackager()
+        await packet.ReadBytes( readerStream )
+        postMessage({
+            type: 'data',
+            payload: packet.GetData().data
+        })
+    }
+
 }
 
 // Helper
@@ -402,6 +547,17 @@ function _calculateSendOrder (packet:RawPackager|LocPackager) {
     } else {
         if (_moqt.tracks[packet.GetData().mediaType].isHipri) {
             ret = Math.floor(ret + Number.MAX_SAFE_INTEGER / 2)
+        }
+    }
+    return ret
+}
+
+function _getTrackTypeFromTrackId( trackId:number ) {
+    let ret
+    for( const [trackType, trackData] of Object.entries(_moqt.tracks)) {
+        if( trackData.id === trackId ) {
+            ret = trackType
+            break
         }
     }
     return ret

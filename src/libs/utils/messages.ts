@@ -1,5 +1,6 @@
 import { numberToVarInt, varIntToNumber } from './varint'
 import { concatBuffer, buffRead } from './buffer_utils'
+import { MoqObjectHeader } from '../../types/moqt'
 
 // MOQT definitions
 // https://datatracker.ietf.org/doc/draft-ietf-moq-transport/01/
@@ -31,9 +32,9 @@ export const ROLE_PARAMETER     = 0x0
 export const AUTHINFO_PARAMETER = 0x2
 
 export const ROLE_PARAMETER_INVALID    = 0x0
-export const ROLE_PARAMETER_PUBLISHER  = 0x1
-export const ROLE_PARAMETER_SUBSCRIBER = 0x2
-export const ROLE_PARAMETER_BOTH       = 0x3
+export const ROLE_PARAMETER_PUBLISHER  = 0x1   // equals CLIENT_SEND
+export const ROLE_PARAMETER_SUBSCRIBER = 0x2   // equals SERVER_SEND
+export const ROLE_PARAMETER_BOTH       = 0x3   // equals BOTH_SEND
 
 export const LOCATION_MODE_NONE              = 0x0
 export const LOCATION_MODE_ABSOLUTE          = 0x1
@@ -41,11 +42,11 @@ export const LOCATION_MODE_RELATIVE_PREVIOUS = 0x2
 export const LOCATION_MODE_RELATIVE_NEXT     = 0x3
 
 
-
-export enum Role {
-    ROLE_CLIENT_SEND = 1,
-    ROLE_SERVER_SEND = 2,
-    ROLE_BOTH_SEND   = 3
+// for type check
+enum Role {
+    ROLE_CLIENT_SEND = 0x1,
+    ROLE_SERVER_SEND = 0x2,
+    ROLE_BOTH_SEND   = 0x3
 }
 
 // 6. Messages
@@ -133,8 +134,8 @@ export async function recvAnnounceResponse( readerStream:ReadableStream ) {
 // SUBSCRIBE
 //
 ////////////////////////////////////////////
-export async function sendSubscribe( writerStream:WritableStream, namespace:string, trackName:string, authInfo:string ) {
-    const mesg = _createSubscribeMessage( namespace, trackName, authInfo )
+export async function sendSubscribeRequest( writerStream:WritableStream, namespace:string, trackName:string, authInfo:string ) {
+    const mesg = _createSubscribeRequestMessage( namespace, trackName, authInfo )
     return await _send( writerStream, mesg )
 }
 
@@ -143,7 +144,7 @@ export async function sendSubscribeResponse( writerStream:WritableStream, namesp
     return await _send( writerStream, mesg )
 }
 
-export async function recvSubscribe( readerStream:ReadableStream ) {
+export async function recvSubscribeRequest( readerStream:ReadableStream ) {
     const ret = {
         namespace: '',
         trackName: '',
@@ -205,8 +206,25 @@ export async function recvSubscribeResponse( readerStream:ReadableStream ) {
     return ret
 }
 
-export async function sendObject( writer:WritableStream, trackId:number, groupSeq:number, objSeq:number, sendOrder:number, data:any ) {
-    return _send( writer, _createObjectBytes( trackId, groupSeq, objSeq, sendOrder, data ))
+export async function sendObject( writer:WritableStreamDefaultWriter, trackId:number, groupSeq:number, objSeq:number, sendOrder:number, data:any ) {
+    return writer.write( _createObjectBytes( trackId, groupSeq, objSeq, sendOrder, data ) )
+}
+
+export async function recvObjectHeader( readerStream:ReadableStream ) {
+    const type = await varIntToNumber( readerStream )
+    if( type !== OBJECT_WITHOUT_LENGTH && type !== OBJECT_WITH_LENGTH ) {
+        throw new Error(`OBJECT type must be ${OBJECT_WITHOUT_LENGTH} or ${OBJECT_WITH_LENGTH}, but got ${type}`)
+    }
+
+    const trackId   = await varIntToNumber( readerStream )
+    const groupSeq  = await varIntToNumber( readerStream )
+    const objSeq    = await varIntToNumber( readerStream )
+    const sendOrder = await varIntToNumber( readerStream )
+    const ret:MoqObjectHeader = { trackId, groupSeq, objSeq, sendOrder, payloadLength: undefined }
+    if( type === OBJECT_WITH_LENGTH ) {
+        ret.payloadLength = await varIntToNumber( readerStream )
+    }
+    return ret
 }
 
 ////////////////////////////////////////////
@@ -237,7 +255,7 @@ function _createAnnounceMessage( namespace:string, authInfo:string ) {
     ])
 }
 
-function _createSubscribeMessage( namespace:string, trackName:string, authInfo:string ) {
+function _createSubscribeRequestMessage( namespace:string, trackName:string, authInfo:string ) {
     return concatBuffer([
         numberToVarInt( SUBSCRIBE ),
         _createStringBytes( namespace ),

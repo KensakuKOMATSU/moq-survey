@@ -1,4 +1,5 @@
 import Sender from './components/sender';
+import Receiver from './components/receiver';
 
 import './App.css';
 
@@ -10,7 +11,14 @@ function App() {
 
   return (
     <div className="App">
-      <Sender endpoint={moqtEp} />
+      <main>
+        <div className='component'>
+          <Sender endpoint={moqtEp} />
+        </div>
+        <div className='component'>
+          <Receiver endpoint={moqtEp} />
+        </div>
+      </main>
     </div>
   );
 }

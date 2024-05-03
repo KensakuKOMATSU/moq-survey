@@ -19,3 +19,17 @@ export type TrackData = {
 export interface MoqtTracks {
     [key:string]: TrackData
 }
+
+export type MoqObjectHeader = {
+    trackId: number,
+    groupSeq: number,
+    objSeq: number,
+    sendOrder: number,
+    payloadLength?: number
+}
+
+export type MessageData = {
+    type:string,
+    metadata?:object,
+    payload:any
+}

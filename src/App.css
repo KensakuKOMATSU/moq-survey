@@ -4,15 +4,21 @@
     padding: 3px;
 }
 
-.App main {
+.App .container {
+    border-top: 2px solid #666;
+    margin-top: 1em;
+}
+
+.App .container .wrapper {
     display: flex;
     flex-direction: row;
     justify-content: space-between;
 
 }
 
-.App main .component {
-    border: 1px solid gray;
+.App .container .wrapper .component {
+    border: 1px solid #999;
+    border-radius: 3px;
     width: 48vw;
     padding: 4px;
 }

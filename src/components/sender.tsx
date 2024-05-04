@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Moqt from '../../libs/moqt'
-import { MoqtTracks } from '../../types/moqt'
+import Moqt from '../libs/moqt'
+import { MoqtTracks } from '../types/moqt'
 
 const moqTracks: MoqtTracks = {
     data: {
@@ -96,11 +96,11 @@ export default function Sender(props:Props) {
 
     return (
         <div className="Sender">
-            <h1>Sender</h1>
-            <p>
+            <h3>Sender</h3>
+            <div>
                 state: {_connected ? 'connected' : 'disconnected'}
-            </p>
-            <p>
+            </div>
+            <div>
                 <button onClick={() => {
                     if( _connected ) {
                         _disconnect()
@@ -108,7 +108,7 @@ export default function Sender(props:Props) {
                         _connect( moqTracks )
                     }
                 }}>{_connected ? 'disconnect' : 'connect' }</button>
-            </p>
+            </div>
             <div>
                 {_connected && (
                     <div>
@@ -117,9 +117,9 @@ export default function Sender(props:Props) {
                     </div>
                 )}
             </div>
-            <p>
+            <div>
                 {!!_errMessage ? `Error::${_errMessage}` : '' }
-            </p>
+            </div>
         </div>
     )
 }

@@ -10,8 +10,8 @@ export type TrackData = {
     name: string,
     packagerType?: string,
     authInfo: string,
-    maxInFlightRequests: number,
-    isHipri: boolean,
+    maxInFlightRequests?: number,
+    isHipri?: boolean,
     numSubscribers?: number
 }
 

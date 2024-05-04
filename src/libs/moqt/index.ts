@@ -114,6 +114,7 @@ export default class Moqt extends EventEmitter {
                 break
             case 'error':
                 if( data.meta?.kind ) {
+                    console.error(`${data.meta.kind}::${data.payload}`)
                     this.emit('error', `${data.meta.kind}::${data.payload}` )
                 }
                 break

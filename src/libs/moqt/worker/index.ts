@@ -1,4 +1,4 @@
-import { StateEnum } from "./utils"
+import { StateEnum } from "../../utils/utils"
 
 import { 
     sendSetupRequest,
@@ -162,7 +162,7 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
             try {
                 const { tracks } = data.payload
 
-                if( !(tracks && typeof tracks === 'object' && typeof tracks.data === 'object' )) {
+                if( !(tracks && typeof tracks === 'object' )) {
                     postErrorMessage( data.type, 'tracks MUST be specified as Object')
                     break
                 }
@@ -216,7 +216,7 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
             try {
                 const { tracks } = data.payload
 
-                if( !(tracks && typeof tracks === 'object' && typeof tracks.data === 'object' )) {
+                if( !(tracks && typeof tracks === 'object' )) {
                     postErrorMessage( data.type, 'tracks MUST be specified as Object')
                     break
                 }
@@ -269,7 +269,10 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
             }
             break
         }
-        default: 
+        default: { 
+            ////////////////////////////////////////////////////////////////////////
+            // send chunk. ex case data.type === 'data' or 'video' or 'audio'
+            //
             if( _moqt.workerState !== StateEnum.Running ) {
                 console.warn("MOQT is not open yet.")
                 break
@@ -279,18 +282,34 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
                 break
             }
 
+            if( !( typeof _moqt.tracks[data.type].maxInFlightRequests === 'number' ) ) {
+                postErrorMessage("error", `maxInFlightRequests is not set in track definition:${data.type}`)
+                break
+            }
+
+            const packagerType = _moqt.tracks[data.type].packagerType || 'raw'
+
+            if( !( packagerType === 'raw' || packagerType === 'loc' )) {
+                postErrorMessage("error", `packagerType MUST be "raw" or "loc", but got ${packagerType}.`)
+            }
+
             if( !( data.type && 'numSubscribers' in _moqt.tracks[data.type])) {
                 postErrorMessage("info", "no subscriber found")
-                // break
+                break
             }
+
             const firstFrameClkms = ( data.firstFrameClkms === undefined || data.firstFrameClkms < 0 ) ? 0 : data.firstFrameClkms
             const compensatedTs = ( data.compensatedTs === undefined || data.compensatedTs < 0 ) ? 0 : data.compensatedTs
             const estimatedDuration = ( data.estimatedDuration === undefined || data.estimatedDuration < 0 ) ? 0 : data.estimatedDuration
             const seqId = (data.seqId === undefined ) ? 0 : data.seqId
-            const packagerType = _moqt.tracks[data.type].packagerType || 'raw'
-
             const chunkData:ChunkData = { mediaType: data.type, firstFrameClkms, compensatedTs, estimatedDuration, seqId, packagerType, chunk: data.chunk, metadata: data.metadata }
+
+            // work around. since I cannot avoid LINT error.
+            // @ts-ignore
             _sendChunk( chunkData, _moqt.inFlightRequests[data.type], _moqt.tracks[data.type].maxInFlightRequests  )
+
+            break
+        }
     }
 })
 
@@ -357,10 +376,10 @@ async function _sendChunk( chunkData:ChunkData, inFlightRequest:object, maxInFli
     if( Object.keys(inFlightRequest).length >= maxInFlightRequests ) {
         return { droppped: true, message: 'too many inflight requests' }
     }
-    return _createRequest(chunkData)
+    return _createSendRequest(chunkData)
 }
 
-async function _createRequest( chunkData:ChunkData ) {
+async function _createSendRequest( chunkData:ChunkData ) {
     let packet = null
 
     if( chunkData.packagerType === 'loc' ) {

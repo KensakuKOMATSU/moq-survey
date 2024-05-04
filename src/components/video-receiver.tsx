@@ -1,26 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Moqt from '../../libs/moqt'
+import Moqt from '../libs/moqt'
 
-import { MoqtTracks, MessageData } from '../../types/moqt'
+import { MoqtTracks, MessageData } from '../types/moqt'
 
-type Props = {
-    endpoint:String
+interface Props  {
+    endpoint:String,
+    trackName:String
 }
 
 const moqTracks: MoqtTracks = {
-    data: {
-        id: -1, // will be set after SUBSCRIBE procedure
-        namespace: "simplechat",
-        name: "foo",
+    video: {
+        id: 0,
+        namespace: "vc",
+        name: "",
         packagerType: 'raw',
-        maxInFlightRequests: 5,
-        isHipri: false,
+        // maxInFlightRequests: 5,
+        // isHipri: false,
         authInfo: "secret"
     }
 }
 
-export default function Receiver(props:Props) {
-    const { endpoint } = props
+export default function VideoReceiver(props:Props) {
+    const { endpoint, trackName } = props
     const [ _connected, setConnected ] = useState<boolean>( false )
     const [ _errMessage, setErrorMessage ] = useState<string>('')
 
@@ -48,6 +49,9 @@ export default function Receiver(props:Props) {
             .then( async () => {
                 // to avoid LINT error.
                 if( !_moqt.current ) return
+
+                // @ts-ignore
+                moqTracks.video.name = trackName
 
                 const ret = await _moqt.current.createSubscriber( moqTracks )
                 console.log('succeeded to create subscriber:%o', ret)
@@ -82,7 +86,7 @@ export default function Receiver(props:Props) {
                 _moqt.current = undefined
             }
         })
-    }, [ endpoint ])
+    }, [ endpoint, trackName ])
 
     const _disconnect = useCallback( async () => {
         if( _moqt.current ) {
@@ -97,12 +101,13 @@ export default function Receiver(props:Props) {
     }, [])
 
     return (
-        <div className="Receiver">
-            <h1>Receiver</h1>
-            <p>
+        <div className="VideoReceiver">
+            <h3>Video Receiver</h3>
+            <div>
                 state: {_connected ? 'connected' : 'disconnected'}
-            </p>
-            <p>
+            </div>
+            <div>
+                trackName: {trackName}<br/>
                 <button onClick={() => {
                     if( _connected ) {
                         _disconnect()
@@ -110,12 +115,12 @@ export default function Receiver(props:Props) {
                         _connect( moqTracks )
                     }
                 }}>{_connected ? 'disconnect' : 'connect' }</button>
-            </p>
+            </div>
             <div>
                 {_connected && (
                     <div>
                         <div className='recv-messages'>
-                        <h2>Received messages</h2>
+                        <h4>Received messages</h4>
                             <ul>
                             { _recvDatas.map( ( mesg, idx ) => (
                                 <li key={idx}>{mesg}</li>
@@ -125,9 +130,9 @@ export default function Receiver(props:Props) {
                     </div>
                 )}
             </div>
-            <p>
+            <div>
                 {!!_errMessage ? `Error::${_errMessage}` : '' }
-            </p>
+            </div>
         </div>
     )
 }

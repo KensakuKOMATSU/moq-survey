@@ -90,7 +90,7 @@ export default function VideoSender(props:Props) {
                 // to avoid LINT error.
                 if( !_moqt.current ) return
 
-                const name = `${randomstring.generate(8)}/video`
+                const name = `${randomstring.generate(8)}-video`
                 moqTracks.video.name = name
                 setTrackName( name )
 
@@ -117,7 +117,9 @@ export default function VideoSender(props:Props) {
     }, [ endpoint, setTrackName ])
 
     const _send = useCallback( ( obj:{ type:string, firstFrameClkms?:number, compensatedTs?:number, estimatedDuration?:number, seqId:number, metadata?:object, chunk:any } ) => {
-        _moqt.current?.send( obj )
+        if( _moqt.current ) {
+            _moqt.current.send( obj )
+        }
     }, [])
 
     const _disconnect = useCallback( async () => {

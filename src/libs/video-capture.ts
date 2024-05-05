@@ -6,10 +6,13 @@ export default class VideoCapture extends EventEmitter {
     _reqId: number|null
     _canvas: HTMLCanvasElement
     _ctx:CanvasRenderingContext2D|null
+    _counter: number
 
     constructor() {
         super()
         this._reqId = null
+
+        this._counter = 0
 
         this._canvas = document.createElement('canvas')
         this._ctx = this._canvas.getContext('2d')
@@ -24,9 +27,11 @@ export default class VideoCapture extends EventEmitter {
 
         const loop = () => {
             if( this._ctx ) {
-                this._ctx.drawImage( videoEl, width, height )
-                const vFrame = new VideoFrame( this._canvas, { timestamp: Date.now()} )
-                this.emit( 'vFrame', { vFrame, clkms: Date.now() } )
+                if( this._counter++ % 2 === 0 ) {
+                    this._ctx.drawImage( videoEl, width, height )
+                    const vFrame = new VideoFrame( this._canvas, { timestamp: Date.now()} )
+                    this.emit( 'vFrame', { vFrame, clkms: Date.now() } )
+                }
             }
             this._reqId = requestAnimationFrame( loop )
         }

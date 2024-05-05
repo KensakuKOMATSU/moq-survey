@@ -13,7 +13,7 @@ const moqTracks: MoqtTracks = {
         id: 0,
         namespace: "vc",
         name: "",
-        packagerType: 'raw',
+        packagerType: 'loc',
         // maxInFlightRequests: 5,
         // isHipri: false,
         authInfo: "secret"
@@ -63,11 +63,18 @@ export default function VideoReceiver(props:Props) {
             })
 
         _moqt.current.addListener('data', ( mesg:MessageData ) => {
-            if( mesg.type === 'data' ) {
+            if( mesg.type === 'videochunk' || mesg.type === 'audiochunk' ) {
                 const ts = new Date().toLocaleString()
-                setRecvDatas( datas => (
-                    [ `${ts} - ${mesg.payload}`, ...datas.slice( 0, 4 ) ]
-                ))
+                if( mesg.metadata ) {
+                    // @ts-ignore
+                    if( mesg.metadata.metadata ) {
+                    // @ts-ignore
+                        const text = `seqId:${mesg.metadata.seqId} len of metadata:${mesg.metadata.metadata.byteLength}`
+                        setRecvDatas( datas => (
+                            [ `${ts} - ${text}`, ...datas.slice( 0, 4 ) ]
+                        ))
+                    }
+                }
             } 
         })
 

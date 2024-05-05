@@ -355,6 +355,7 @@ async function _startReceiveObjects( expire:number ) {
 
     const incomingStreams = _moqt.wt.incomingUnidirectionalStreams
     const readableStreams = incomingStreams.getReader()
+    console.log( incomingStreams, readableStreams )
 
     while ( _moqt.workerState !== StateEnum.Stopped ) {
         const stream = await readableStreams.read()
@@ -397,7 +398,7 @@ async function _createSendRequest( chunkData:ChunkData ) {
             chunkData.metadata,
             chunkDataBuffer
         )
-    } else if( chunkData.packagerType === 'raw') {
+    } else if( chunkData.packagerType === 'raw' ) {
         packet = new RawPackager()
         packet.SetData( 
             chunkData.mediaType, 

@@ -31,6 +31,19 @@ export function serializeMetadata( metadata:MetaData ):Uint8Array|undefined {
     return ret
 }
 
+export function deSerializeMetadata( metadata:Buffer) {
+    const decoder = new TextDecoder()
+    const str = decoder.decode( metadata )
+    const data = JSON.parse(str)
+
+    if(( 'decoderConfig' in data ) && ('descriptionInBase64' in data.decoderConfig )) {
+        const description = _base64ToArrayBuffer( data.decoderConfig.descriptionInBase64 )
+        data.decoderConfig = { ...data.decoderConfig, description }
+        delete data.decoderConfig.descriptionInBase64
+    }
+    return data.decoderConfig
+}
+
 function _isMetadataValid( metadata:MetaData ) {
     return metadata !== undefined && 'decoderConfig' in metadata
 }
@@ -44,4 +57,14 @@ function _arrayBufferToBase64( buffer:Buffer ):string {
         binary += String.fromCharCode(bytes[i])
     }
     return btoa(binary)
+}
+
+function _base64ToArrayBuffer( base64:string ) {
+    const binaryString = atob( base64 )
+    const len = binaryString.length
+    const bytes = new Uint8Array( len )
+    for( let i = 0; i < len; i++ ) {
+        bytes[i] = binaryString.charCodeAt(i)
+    }
+    return bytes.buffer
 }

@@ -28,7 +28,7 @@ export default class VideoCapture extends EventEmitter {
         const loop = () => {
             if( this._ctx ) {
                 if( this._counter++ % 2 === 0 ) {
-                    this._ctx.drawImage( videoEl, width, height )
+                    this._ctx.drawImage( videoEl, 0, 0, width, height )
                     const vFrame = new VideoFrame( this._canvas, { timestamp: Date.now()} )
                     this.emit( 'vFrame', { vFrame, clkms: Date.now() } )
                 }

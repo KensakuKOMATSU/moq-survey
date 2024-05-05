@@ -355,7 +355,6 @@ async function _startReceiveObjects( expire:number ) {
 
     const incomingStreams = _moqt.wt.incomingUnidirectionalStreams
     const readableStreams = incomingStreams.getReader()
-    console.log( incomingStreams, readableStreams )
 
     while ( _moqt.workerState !== StateEnum.Stopped ) {
         const stream = await readableStreams.read()

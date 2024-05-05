@@ -159,6 +159,7 @@ export default function VideoSender(props:Props) {
 
             _videoEncoderConfig.current.encoderConfig.width = videoEl.videoWidth
             _videoEncoderConfig.current.encoderConfig.height = videoEl.videoHeight
+            console.log( 'encoderConfig:%o', _videoEncoderConfig.current)
 
             _vEncoder.current.init( _videoEncoderConfig.current )
 

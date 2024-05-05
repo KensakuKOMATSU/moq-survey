@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Moqt from '../libs/moqt'
+import VDecoder from '../libs/video-decoder'
 
 import { MoqtTracks, MessageData } from '../types/moqt'
+
+import './video-receiver.css'
 
 interface Props  {
     endpoint:String,
@@ -28,8 +31,16 @@ export default function VideoReceiver(props:Props) {
     const [ _recvDatas, setRecvDatas ] = useState<Array<string>>([])
 
     const _moqt = useRef<Moqt>()
+    const _vDecoder = useRef<VDecoder>()
+
+    const _canvasEl = useRef<HTMLCanvasElement>(null)
+    const _ctx = useRef<CanvasRenderingContext2D>(null)
 
     useEffect(() => {
+        if( _canvasEl.current ) {
+            // @ts-ignore
+            _ctx.current = _canvasEl.current.getContext('2d')
+        }
         return function() {
             if( _moqt.current ) {
                 _moqt.current.disconnect()
@@ -55,6 +66,24 @@ export default function VideoReceiver(props:Props) {
 
                 const ret = await _moqt.current.createSubscriber( moqTracks )
                 console.log('succeeded to create subscriber:%o', ret)
+
+                _vDecoder.current = new VDecoder()
+
+                _vDecoder.current.addListener( 'vFrame', ( data:object ) => {
+                    //@ts-ignore
+                    const { frameData } = data
+                    if( _canvasEl.current && _ctx.current ) {
+                        _canvasEl.current.width = frameData.displayWidth
+                        _canvasEl.current.height = frameData.displayHeight
+                        _ctx.current.drawImage(frameData, 0, 0, frameData.codedWidth, frameData.codedHeight)
+                        frameData.close()
+                    }
+                })
+
+                _vDecoder.current.addListener( 'error', ( mesg:string ) => {
+                    setErrorMessage( mesg )
+                })
+
                 setConnected( true )
             })
             .catch( (err:Error) => {
@@ -75,6 +104,7 @@ export default function VideoReceiver(props:Props) {
                         ))
                     }
                 }
+                _vDecoder.current?.decode( mesg )
             } 
         })
 
@@ -135,7 +165,10 @@ export default function VideoReceiver(props:Props) {
                             </ul>
                         </div>
                     </div>
-                )}
+                )}<br />
+                <div className='video-wrapper'>
+                    <canvas ref={_canvasEl}></canvas>
+                </div>
             </div>
             <div>
                 {!!_errMessage ? `Error::${_errMessage}` : '' }

@@ -1,7 +1,11 @@
 export type MoqtData = {
     type: string,
     chunk: any,
-    seqId:number
+    seqId:number,
+    firstaFrameClkms?: number,
+    compensatedTs? :number,
+    estimatedDuration?: number,
+    metadata?: any
 }
 
 export type TrackData = {

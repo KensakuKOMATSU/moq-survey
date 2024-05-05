@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Moqt from '../libs/moqt'
 import randomstring from 'randomstring'
 
+import VideoCapture from '../libs/video-capture'
+import VEncoder from '../libs/video-encoder'
+
+import { TimeBufferChecker } from '../libs/utils/time_buffer_checker'
+
 import { MoqtTracks } from '../types/moqt'
-import VideoCapture from '../libs/video-caputure'
-
 import './video-sender.css'
-
-// declare var MediaStreamTrackProcessor:any
 
 const moqTracks: MoqtTracks = {
     video: {
@@ -32,6 +33,8 @@ type Resolution = {
     height: number
 }
 
+
+
 export default function VideoSender(props:Props) {
     const { endpoint, trackName, setTrackName } = props
     const [ _connected, setConnected ] = useState<boolean>( false )
@@ -42,9 +45,29 @@ export default function VideoSender(props:Props) {
 
     const _moqt = useRef<Moqt>()
     const _videoCapture = useRef<VideoCapture>()
+    const _vEncoder = useRef<VEncoder>()
     const _videoWrapperEl = useRef<HTMLDivElement>(null)
     const _videoStream = useRef<MediaStream>()
-    // const _videoProcessor = useRef()
+    const _vTimeBufferChecker = useRef<TimeBufferChecker>()
+
+    const _currentAudioTs = useRef<number>()
+    const _currentVideoTs = useRef<number>()
+    const _audioOffsetTs = useRef<number>()
+    const _videoOffsetTs = useRef<number>()
+
+    const _videoEncoderConfig = useRef({
+        encoderConfig: {
+            codec: 'avc1.42001e', // Baseline = 66, level 30 (see: https://en.wikipedia.org/wiki/Advanced_Video_Coding)
+            width: 320,
+            height: 180,
+            bitrate: 1_000_000, // 1 Mbps
+            framerate: 30,
+            latencyMode: 'realtime', // Sends 1 chunk per frame
+        },
+        encoderMaxQueueSize: 2,
+        keyframeEvery: 60,
+    });
+
 
     useEffect(() => {
         return function() {
@@ -69,7 +92,6 @@ export default function VideoSender(props:Props) {
 
                 const name = `${randomstring.generate(8)}/video`
                 moqTracks.video.name = name
-                // setTrackName( trackName )
                 setTrackName( name )
 
                 const ret = await _moqt.current.createPublisher( moqTracks )
@@ -94,16 +116,9 @@ export default function VideoSender(props:Props) {
         })
     }, [ endpoint, setTrackName ])
 
-    // const _send = useCallback( () => {
-    //     // if( _moqt.current && !!_sendData ) {
-    //         // _moqt.current.send({
-    //         //     type: "data",
-    //         //     chunk: _sendData,
-    //         //     seqId: _seqId.current
-    //         // })
-    //         _seqId.current++
-    //     //}
-    // }, [])
+    const _send = useCallback( ( obj:{ type:string, firstFrameClkms?:number, compensatedTs?:number, estimatedDuration?:number, seqId:number, metadata?:object, chunk:any } ) => {
+        _moqt.current?.send( obj )
+    }, [])
 
     const _disconnect = useCallback( async () => {
         if( _moqt.current ) {
@@ -133,33 +148,91 @@ export default function VideoSender(props:Props) {
                 _videoWrapperEl.current.appendChild( videoEl )
                 setResolution({ width: videoEl.videoWidth, height: videoEl.videoHeight })
             }
+
             setCaptureStarted( true )
 
-            // const vTrack = stream.getVideoTracks()[0]
-            // console.log( vTrack )
-            // const videoProcessor = new MediaStreamTrackProcessor({ track: vTrack })
-
-            // // @ts-ignore
-            // const vFrameStream = videoProcessor.readable
-
             _videoCapture.current = new VideoCapture()
+            _vEncoder.current = new VEncoder()
+            _vTimeBufferChecker.current = new TimeBufferChecker("video")
 
-            _videoCapture.current.start( videoEl ) // vFrameStream )
+            _videoEncoderConfig.current.encoderConfig.width = videoEl.videoWidth
+            _videoEncoderConfig.current.encoderConfig.height = videoEl.videoHeight
 
-            _videoCapture.current.addListener('vFrame', vFrame => {
-                console.log( vFrame )
-                vFrame.close()
+            _vEncoder.current.init( _videoEncoderConfig.current )
+
+            _videoCapture.current.start( videoEl )
+
+            _videoCapture.current.addListener('vFrame', ({ vFrame, clkms }) => {
+                let estimatedDuration = -1
+                if( _currentVideoTs.current === undefined ) {
+                    if( _audioOffsetTs.current === undefined || _currentAudioTs.current === undefined ) {
+                        _videoOffsetTs.current = -vFrame.timestamp
+                    } else {
+                        _videoOffsetTs.current = -vFrame.timestamp + _currentAudioTs.current + _audioOffsetTs.current
+                    }
+                } else {
+                    estimatedDuration = vFrame.timestamp - _currentVideoTs.current
+                }
+                _currentVideoTs.current = vFrame.timestamp
+
+                if( _vTimeBufferChecker.current && _vEncoder.current && _currentVideoTs.current && _videoOffsetTs.current ) {
+                    _vTimeBufferChecker.current.AddItem({ 
+                        ts: _currentVideoTs.current, 
+                        compensatedTs: _currentVideoTs.current + _videoOffsetTs.current,
+                        estimatedDuration,
+                        clkms: clkms
+                    })
+                    _vEncoder.current.encode( vFrame )
+                }
             })
+
             _videoCapture.current.addListener('error', (mesg:string) => console.error( mesg ))
+
+            _vEncoder.current.addListener('vchunk', ( { seqId, metadata, chunk }:{ seqId: number, metadata:any, chunk:object }) => {
+                //@ts-ignore
+                const itemTsClk = _vTimeBufferChecker.current?.GetItemByTs( chunk.timestamp )
+
+                const obj = {
+                    type: "video",
+                    firstFrameClkms: itemTsClk?.clkms,
+                    compensatedTs: itemTsClk?.compensatedTs,
+                    estimatedDuration: itemTsClk?.estimatedDuration,
+                    seqId,
+                    chunk,
+                    metadata
+                }
+                _send(obj)
+            })
         }
-    }, [])
+    }, [ _send ])
 
     const _stopCapture = useCallback( async () => {
         if( !_moqt.current ) return
         if( !_videoWrapperEl.current || !_videoStream.current ) return
+
+        _audioOffsetTs.current = undefined
+        _currentAudioTs.current = undefined
+        _videoOffsetTs.current = undefined
+        _currentVideoTs.current = undefined
         
+        // stop encoder
+        if( _vEncoder.current ) {
+            _vEncoder.current.stop()
+            _vEncoder.current.destroy()
+            _vEncoder.current = undefined
+        }
+
+        // stop TimeBufferChecker
+        if( _vTimeBufferChecker.current ) {
+            _vTimeBufferChecker.current.Clear()
+            _vTimeBufferChecker.current = undefined
+        }
+
         // stop capture
-        if( _videoCapture.current ) _videoCapture.current.stop()
+        if( _videoCapture.current ) {
+            _videoCapture.current.stop()
+            _videoCapture.current = undefined
+        }
 
         // stop video stream
         for( const t of _videoStream.current.getTracks() ) {

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Moqt from '../libs/moqt'
 import VDecoder from '../libs/video-decoder'
+import VideoRenderer from './video-renderer'
+import JitterBuffer from '../libs/jitter-buffer'
 
 import { MoqtTracks, MessageData } from '../types/moqt'
 
@@ -25,22 +27,25 @@ const moqTracks: MoqtTracks = {
 
 export default function VideoReceiver(props:Props) {
     const { endpoint, trackName } = props
+
     const [ _connected, setConnected ] = useState<boolean>( false )
+    const [ _minJitterBufferMs, setMinJitterBufferMs ] = useState<number>( -1 )
     const [ _errMessage, setErrorMessage ] = useState<string>('')
 
     const [ _recvDatas, setRecvDatas ] = useState<Array<string>>([])
 
     const _moqt = useRef<Moqt>()
     const _vDecoder = useRef<VDecoder>()
-
-    const _canvasEl = useRef<HTMLCanvasElement>(null)
-    const _ctx = useRef<CanvasRenderingContext2D>(null)
+    const _renderer = useRef<typeof VideoRenderer>(null)
+    const _jitterBuffer = useRef<JitterBuffer>()
+    const _reqId = useRef<number>()
 
     useEffect(() => {
-        if( _canvasEl.current ) {
-            // @ts-ignore
-            _ctx.current = _canvasEl.current.getContext('2d')
-        }
+        _jitterBuffer.current = new JitterBuffer()
+        setMinJitterBufferMs( _jitterBuffer.current.minJitterBufferMs )
+
+        _vDecoder.current = new VDecoder()
+
         return function() {
             if( _moqt.current ) {
                 _moqt.current.disconnect()
@@ -50,8 +55,14 @@ export default function VideoReceiver(props:Props) {
         }
     }, [])
 
+    useEffect(() => {
+        if( !_jitterBuffer.current ) return
+
+        _jitterBuffer.current.minJitterBufferMs = _minJitterBufferMs
+    }, [ _minJitterBufferMs ])
+
     const _connect = useCallback( (moqTracks:MoqtTracks) => {
-        if(_moqt.current) return
+        if(_moqt.current || !_jitterBuffer.current || !_vDecoder.current ) return
 
         setErrorMessage('')
 
@@ -67,22 +78,30 @@ export default function VideoReceiver(props:Props) {
                 const ret = await _moqt.current.createSubscriber( moqTracks )
                 console.log('succeeded to create subscriber:%o', ret)
 
-                _vDecoder.current = new VDecoder()
+                // to avoid LINT error.
+                if( _vDecoder.current ) {
+                    _vDecoder.current.addListener( 'vFrame', ( data:{frameData:any} ) => {
+                        const { frameData } = data
+                        //@ts-ignore
+                        _renderer.current.drawFrame( frameData )
+                    })
 
-                _vDecoder.current.addListener( 'vFrame', ( data:object ) => {
-                    //@ts-ignore
-                    const { frameData } = data
-                    if( _canvasEl.current && _ctx.current ) {
-                        _canvasEl.current.width = frameData.displayWidth
-                        _canvasEl.current.height = frameData.displayHeight
-                        _ctx.current.drawImage(frameData, 0, 0, frameData.codedWidth, frameData.codedHeight)
-                        frameData.close()
+                    _vDecoder.current.addListener( 'error', ( mesg:string ) => {
+                        setErrorMessage( mesg )
+                    })
+                }
+
+                const startDecoding = () => {
+                    if( _jitterBuffer.current && _vDecoder.current ) {
+                        const data = _jitterBuffer.current.getItem()
+                        if( data ) {
+                            _vDecoder.current.decode( data )
+                        }
                     }
-                })
+                    _reqId.current = requestAnimationFrame( startDecoding )
+                }
 
-                _vDecoder.current.addListener( 'error', ( mesg:string ) => {
-                    setErrorMessage( mesg )
-                })
+                _reqId.current = requestAnimationFrame( startDecoding )
 
                 setConnected( true )
             })
@@ -91,20 +110,21 @@ export default function VideoReceiver(props:Props) {
                 setConnected( false )
             })
 
-        _moqt.current.addListener('data', ( mesg:MessageData ) => {
-            if( mesg.type === 'videochunk' || mesg.type === 'audiochunk' ) {
+        _moqt.current.addListener('data', ( data:MessageData ) => {
+            if( data.type === 'videochunk' || data.type === 'audiochunk' ) {
                 const ts = new Date().toLocaleString()
-                if( mesg.metadata ) {
+                if( data.metadata ) {
                     // @ts-ignore
-                    if( mesg.metadata.metadata ) {
+                    if( data.metadata.metadata ) {
                     // @ts-ignore
-                        const text = `seqId:${mesg.metadata.seqId} len of metadata:${mesg.metadata.metadata.byteLength}`
+                        const text = `seqId:${data.metadata.seqId} len of metadata:${data.metadata.metadata.byteLength}`
                         setRecvDatas( datas => (
                             [ `${ts} - ${text}`, ...datas.slice( 0, 4 ) ]
                         ))
                     }
                 }
-                _vDecoder.current?.decode( mesg )
+                // @ts-ignore
+                if( _jitterBuffer.current ) _jitterBuffer.current.addItem( data )
             } 
         })
 
@@ -126,6 +146,10 @@ export default function VideoReceiver(props:Props) {
     }, [ endpoint, trackName ])
 
     const _disconnect = useCallback( async () => {
+        if( _reqId.current ) {
+            cancelAnimationFrame( _reqId.current )
+            _reqId.current = undefined
+        }
         if( _moqt.current ) {
             await _moqt.current.disconnect()
                 .catch( err => setErrorMessage( err.message ))
@@ -145,6 +169,18 @@ export default function VideoReceiver(props:Props) {
             </div>
             <div>
                 trackName: {trackName}<br/>
+                { _minJitterBufferMs >= 0 && (
+                    <div>
+                        minJitterBufferMs: 
+                        <input 
+                            type="number" 
+                            min={0}
+                            max={750}
+                            value={_minJitterBufferMs} 
+                            onChange={e => setMinJitterBufferMs( Number(e.target.value))} 
+                        />
+                    </div>
+                )}
                 <button onClick={() => {
                     if( _connected ) {
                         _disconnect()
@@ -153,23 +189,24 @@ export default function VideoReceiver(props:Props) {
                     }
                 }}>{_connected ? 'disconnect' : 'connect' }</button>
             </div>
+            { _connected && (
             <div>
-                {_connected && (
-                    <div>
-                        <div className='recv-messages'>
-                        <h4>Received messages</h4>
-                            <ul>
-                            { _recvDatas.map( ( mesg, idx ) => (
-                                <li key={idx}>{mesg}</li>
-                            ))}
-                            </ul>
-                        </div>
-                    </div>
-                )}<br />
                 <div className='video-wrapper'>
-                    <canvas ref={_canvasEl}></canvas>
+                    <VideoRenderer ref={_renderer} />
+                </div>
+                <hr/>
+                <div>
+                    <div className='recv-messages'>
+                    <h4>Received messages</h4>
+                        <ul>
+                        { _recvDatas.map( ( mesg, idx ) => (
+                            <li key={idx}>{mesg}</li>
+                        ))}
+                        </ul>
+                    </div>
                 </div>
             </div>
+            )}
             <div>
                 {!!_errMessage ? `Error::${_errMessage}` : '' }
             </div>

@@ -57,7 +57,8 @@ export default function VideoSender(props:Props) {
 
     const _videoEncoderConfig = useRef({
         encoderConfig: {
-            codec: 'avc1.42001e', // Baseline = 66, level 30 (see: https://en.wikipedia.org/wiki/Advanced_Video_Coding)
+            // codec: 'avc1.42001e', // Baseline = 66, level 30 (see: https://en.wikipedia.org/wiki/Advanced_Video_Coding)
+            codec: 'avc1.640028',  // High profile, level 40
             width: 320,
             height: 180,
             bitrate: 1_000_000, // 1 Mbps
@@ -138,7 +139,7 @@ export default function VideoSender(props:Props) {
         if( !_moqt.current ) return
         if( _videoStream.current ) return
 
-        const videoConstraints = { width: { ideal: 640 }, height: { ideal: 360 }}
+        const videoConstraints = { width: { ideal: 1280 }, height: { ideal: 720 }}
         const stream:MediaStream = await navigator.mediaDevices.getUserMedia({video:videoConstraints, audio: false})
         const videoEl:HTMLVideoElement = document.createElement('video')
         videoEl.srcObject = stream
@@ -157,8 +158,8 @@ export default function VideoSender(props:Props) {
             _vEncoder.current = new VEncoder()
             _vTimeBufferChecker.current = new TimeBufferChecker("video")
 
-            _videoEncoderConfig.current.encoderConfig.width = videoEl.videoWidth
-            _videoEncoderConfig.current.encoderConfig.height = videoEl.videoHeight
+            _videoEncoderConfig.current.encoderConfig.width  = videoEl.videoWidth // Math.floor( videoEl.videoWidth / 2 )
+            _videoEncoderConfig.current.encoderConfig.height = videoEl.videoHeight // Math.floor( videoEl.videoHeight / 2 )
             console.log( 'encoderConfig:%o', _videoEncoderConfig.current)
 
             _vEncoder.current.init( _videoEncoderConfig.current )

@@ -80,19 +80,23 @@ self.addEventListener( 'message', async ({ data }:{data:MessageData}) => {
                 return
             }
 
-            vEncoder = new VideoEncoder( initVideoEncoder )
+            try {
+                vEncoder = new VideoEncoder( initVideoEncoder )
 
-            vEncoder.configure( encoderConfig )
+                vEncoder.configure( encoderConfig )
 
-            if( data.metadata !== undefined ) {
-                if( 'encoderMaxQueueSize' in data.metadata && typeof data.metadata.encoderMaxQueueSize === 'number' ) {
-                    state.encoderMaxQueueSize = data.metadata.encoderMaxQueueSize
+                if( data.metadata !== undefined ) {
+                    if( 'encoderMaxQueueSize' in data.metadata && typeof data.metadata.encoderMaxQueueSize === 'number' ) {
+                        state.encoderMaxQueueSize = data.metadata.encoderMaxQueueSize
+                    }
+                    if( 'keyframeEvery' in data.metadata && typeof data.metadata.keyframeEvery === 'number' ) {
+                        state.keyframeEvery = data.metadata.keyframeEvery
+                    }
                 }
-                if( 'keyframeEvery' in data.metadata && typeof data.metadata.keyframeEvery === 'number' ) {
-                    state.keyframeEvery = data.metadata.keyframeEvery
-                }
+                state.worker = StateEnum.Running
+            } catch( err ) {
+                postErrorMessage('init', `error detected while init:${err}` )
             }
-            state.worker = StateEnum.Running
 
             break
         }

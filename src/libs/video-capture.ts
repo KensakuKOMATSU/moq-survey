@@ -22,13 +22,18 @@ export default class VideoCapture extends EventEmitter {
         const width = videoEl.videoWidth
         const height = videoEl.videoHeight
 
-        this._canvas.width = width
-        this._canvas.height = height
+        this._canvas.width  = width // Math.floor( width  / 2 )
+        this._canvas.height = height // Math.floor( height / 2 )
+
+        const cropW = width // Math.floor( width / 2 )
+        const cropH = height // Math.floor( height / 2 )
 
         const loop = () => {
             if( this._ctx ) {
                 if( this._counter++ % 2 === 0 ) {
-                    this._ctx.drawImage( videoEl, 0, 0, width, height )
+                    //this._ctx.drawImage( videoEl, 0, cropH, cropW, cropH, 0, 0, cropW, cropH )
+                    this._ctx.drawImage( videoEl, 0, 0, cropW, cropH, 0, 0, cropW, cropH )
+                    //this._ctx.drawImage( videoEl, 0, 0, width, height )
                     const vFrame = new VideoFrame( this._canvas, { timestamp: Date.now()} )
                     this.emit( 'vFrame', { vFrame, clkms: Date.now() } )
                 }
